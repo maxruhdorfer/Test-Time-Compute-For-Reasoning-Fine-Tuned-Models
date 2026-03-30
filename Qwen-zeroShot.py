@@ -19,16 +19,18 @@ messages = [
 ]
 
 # TIR
-messages = [
-    {"role": "system", "content": "Please integrate natural language reasoning with programs to solve the problem above, and put your final answer within \\boxed{}."},
-    {"role": "user", "content": prompt}
-]
+# messages = [
+#     {"role": "system", "content": "Please integrate natural language reasoning with programs to solve the problem above, and put your final answer within \\boxed{}."},
+#     {"role": "user", "content": prompt}
+# ]
 
 text = tokenizer.apply_chat_template(
     messages,
     tokenize=False,
     add_generation_prompt=True
 )
+
+print(text)
 model_inputs = tokenizer([text], return_tensors="pt").to(device)
 
 generated_ids = model.generate(
@@ -40,3 +42,4 @@ generated_ids = [
 ]
 
 response = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+print(response)
