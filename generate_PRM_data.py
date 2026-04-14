@@ -63,7 +63,8 @@ def gpu_worker(gpu_id: int, input_queue: Queue, output_queue: Queue, modelCode: 
     """ Worker function to run on each GPU """
 
     # Initialize the model on the assigned GPU
-    llm = LLM(model=modelCode, enable_prefix_caching=True, dtype="bfloat16", device=f"cuda:{gpu_id}")
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    llm = LLM(model=modelCode, enable_prefix_caching=True, dtype="bfloat16")
     
     # Attend to input queue and process batches until None is received
     while True:
