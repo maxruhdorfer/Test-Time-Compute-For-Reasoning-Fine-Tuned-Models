@@ -91,8 +91,8 @@ if __name__ == "__main__":
     if args.train_samples < len(train_data):
         train_data = random.sample(train_data, args.train_samples)
     
-    with open('data/PRM_Train/data_selection.json', 'w') as json_file:
-        json.dump(train_data, json_file, indent=4)
+    # with open('data/PRM_Train/data_selection.json', 'w') as json_file:
+        # json.dump(train_data, json_file, indent=4)
         
     # prepare queries
     queries = [prompt_template.format(question=q["problem"]) for q in train_data]
