@@ -17,6 +17,7 @@ class PRM(nn.Module):
         model_id: str,
         head_dim: int=1,
         freeze_model: bool=True,
+        device: torch.device | str = "cpu",
         lora_k: int=16,
         lora_alpha: int=32,
         lora_dropout: float=0.1
@@ -27,7 +28,7 @@ class PRM(nn.Module):
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
             dtype="bfloat16",  # Use string to avoid deprecation warning
-            device_map="auto",
+            device_map=device,
         )
 
         # Turn of KV caching for training
@@ -73,11 +74,9 @@ class PRM(nn.Module):
 
         loss = None
         if labels is not None:
+            logits_squeezed = logits.squeeze(-1)
             mask = labels != -100
-            if mask.any():
-                loss = F.cross_entropy(logits[mask], labels[mask])
-            else:
-                loss = logits.sum() * 0
+            loss = F.binary_cross_entropy_with_logits(logits_squeezed[mask], labels[mask].float(), reduction='sum')
 
         return loss, logits
 
