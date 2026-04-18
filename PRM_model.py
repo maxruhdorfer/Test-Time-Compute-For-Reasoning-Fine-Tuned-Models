@@ -25,9 +25,13 @@ class PRM(nn.Module):
 
         super().__init__()
 
+        # bfloat16 backward is not supported on MPS
+        device_str = device if isinstance(device, str) else device.type
+        model_dtype = torch.bfloat16 if device_str == "cuda" else torch.float32
+
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            dtype="bfloat16",  # Use string to avoid deprecation warning
+            torch_dtype=model_dtype,
             device_map=device,
         )
 
@@ -38,10 +42,10 @@ class PRM(nn.Module):
         if freeze_model:
             for param in self.model.parameters():
                 param.requires_grad = False
-        
+
         # Build head with same dtype as model
         self.head = nn.Linear(self.model.config.hidden_size, head_dim, bias=False)
-        self.head = self.head.to(torch.bfloat16)
+        self.head = self.head.to(model_dtype)
     
     def forward(
         self,
@@ -71,14 +75,14 @@ class PRM(nn.Module):
         hidden = outputs.hidden_states[-1]
 
         logits = self.head(hidden)
+        logits_squeezed = logits.squeeze(-1)
 
         loss = None
         if labels is not None:
-            logits_squeezed = logits.squeeze(-1)
             mask = labels != -100
-            loss = F.binary_cross_entropy_with_logits(logits_squeezed[mask], labels[mask].float(), reduction='sum')
+            loss = F.binary_cross_entropy_with_logits(logits_squeezed[mask], labels[mask].float())
 
-        return loss, logits
+        return loss, logits_squeezed
 
     
     @property
