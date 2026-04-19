@@ -1,4 +1,5 @@
 """ Define PRM Model """
+import os
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
@@ -45,7 +46,7 @@ class PRM(nn.Module):
 
         # Build head with same dtype as model
         self.head = nn.Linear(self.model.config.hidden_size, head_dim, bias=False)
-        self.head = self.head.to(model_dtype)
+        self.head = self.head.to(device=device, dtype=model_dtype)
     
     def forward(
         self,
@@ -91,3 +92,67 @@ class PRM(nn.Module):
     
     def count_trainable_params(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def save(self, path: str) -> None:
+        """Save model weights and classification head to path."""
+        os.makedirs(path, exist_ok=True)
+        self.model.save_pretrained(path)
+        torch.save(self.head.state_dict(), os.path.join(path, "head.pt"))
+
+    @classmethod
+    def load(
+        cls,
+        path: str,
+        freeze_model: bool = True,
+        device: torch.device | str = "cpu",
+    ) -> "PRM":
+        """Load a PRM instance from a saved checkpoint directory."""
+        head_state = torch.load(os.path.join(path, "head.pt"), map_location=device)
+        head_dim = head_state["weight"].shape[0]
+        prm = cls(model_id=path, head_dim=head_dim, freeze_model=freeze_model, device=device)
+        prm.head.load_state_dict(head_state)
+        return prm
+
+def score_trace(
+    model: PRM,
+    tokenizer: AutoTokenizer,
+    prompt: str,
+    steps: List[str],
+    step_sep: str,
+    device: torch.device,
+) -> List[Dict[str, float]]:
+    """Score each step in a reasoning trace.
+
+    Returns list of dicts with probabilities for each class.
+    """
+    prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+
+    input_ids = list(prompt_ids)
+    attention_mask = [1] * len(input_ids)
+    class_idx = []
+
+    for step_text in steps:
+        step_payload = step_text + step_sep
+        encoded = tokenizer(step_payload, add_special_tokens=False)["input_ids"]
+        input_ids.extend(encoded)
+        attention_mask.extend([1] * len(encoded))
+        class_idx.append(len(input_ids) - 1)
+
+    batch = {
+        "input_ids": torch.tensor(input_ids, dtype=torch.long).unsqueeze(0).to(device),
+        "attention_mask": torch.tensor(attention_mask, dtype=torch.long).unsqueeze(0).to(device),
+    }
+
+    model.eval()
+    with torch.no_grad():
+        _, logits = model(**batch)
+        probs = torch.sigmoid(logits[0])       # (batch_size, context_length), values in [0, 1]
+        # preds = (probs > 0.5).long()  
+        # probs = torch.softmax(logits[0], dim=-1)
+
+    results = []
+    for b in class_idx:
+        prob = probs[b].cpu().item()
+        results.append({"prob": prob, "pred": 1 if prob > 0.5 else 0})
+
+    return results

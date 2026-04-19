@@ -315,9 +315,7 @@ def train_prm(
                 if not no_checkpoint and val_acc > best_val_acc:
                     best_val_acc = val_acc
                     save_path = os.path.join(checkpoint_dir, run_name)
-                    os.makedirs(save_path, exist_ok=True)
-                    model.model.save_pretrained(save_path)
-                    torch.save(model.head.state_dict(), os.path.join(save_path, "head.pt"))
+                    model.save(save_path)
                     print(f"  Saved checkpoint (val_acc={val_acc:.3f}) → {save_path}")
 
                 model.train()
