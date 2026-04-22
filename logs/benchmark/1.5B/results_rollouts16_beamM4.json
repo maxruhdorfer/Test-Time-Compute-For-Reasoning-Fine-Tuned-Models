@@ -1,0 +1,13 @@
+{
+  "rollouts": 16,
+  "beam_M": 4,
+  "accuracies": {
+    "majority_vote": 0.774,
+    "vanilla_best_of_N_15": 0.762,
+    "weighted_best_of_N_15": 0.776,
+    "beam_search_15": 0.752,
+    "vanilla_best_of_N_7": 0.762,
+    "weighted_best_of_N_7": 0.78,
+    "beam_search_7": 0.732
+  }
+}

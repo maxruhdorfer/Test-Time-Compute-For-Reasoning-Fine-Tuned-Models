@@ -5,42 +5,25 @@ from typing import List, Dict
 from collections import Counter, defaultdict
 from grading.math_normalize import normalize_answer
 from grading.grader import grade_answer
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
+from vllm import LLM, SamplingParams
 from generate_PRM_data import extract_boxed
 
-def _generate_next_steps_batched(
-    gen_model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+def _generate_next_steps_vllm(
+    llm: LLM,
     contexts: List[str],
     step_sep: str,
-    device: torch.device,
     max_new_tokens: int = 512,
     temperature: float = 0.7,
 ) -> List[str]:
-    """Generate one reasoning step for each context in a single batched call."""
-    tokenizer.padding_side = "left"
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    inputs = tokenizer(contexts, return_tensors="pt", padding=True, add_special_tokens=False).to(device)
-    prompt_len = inputs.input_ids.shape[1]
-
-    with torch.no_grad():
-        output_ids = gen_model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=temperature,
-            pad_token_id=tokenizer.eos_token_id,
-        )
-
-    results = []
-    for out in output_ids:
-        new_text = tokenizer.decode(out[prompt_len:], skip_special_tokens=True)
-        if step_sep in new_text:
-            new_text = new_text[: new_text.index(step_sep)]
-        results.append(new_text.strip())
-    return results
+    """Generate one reasoning step per context using vLLM with prefix caching."""
+    sampling_params = SamplingParams(
+        temperature=temperature,
+        max_tokens=max_new_tokens,
+        stop=[step_sep],
+    )
+    outputs = llm.generate(contexts, sampling_params)
+    return [output.outputs[0].text.strip() for output in outputs]
 
 
 def _score_candidates_batched(
@@ -78,15 +61,23 @@ def _score_candidates_batched(
     }
 
     prm_model.eval()
+    all_probs = []
+    chunk_size = 4
     with torch.no_grad():
-        _, logits = prm_model(**batch)
-        probs = torch.sigmoid(logits)
+        for start in range(0, len(padded_ids), chunk_size):
+            chunk_batch = {
+                "input_ids": batch["input_ids"][start:start + chunk_size],
+                "attention_mask": batch["attention_mask"][start:start + chunk_size],
+            }
+            _, logits = prm_model(**chunk_batch)
+            all_probs.append(torch.sigmoid(logits).cpu())
 
-    return [probs[i, idx].cpu().item() for i, idx in enumerate(last_step_indices)]
+    probs = torch.cat(all_probs, dim=0)
+    return [probs[i, idx].item() for i, idx in enumerate(last_step_indices)]
 
 
 def beam_search(
-    gen_model: AutoModelForCausalLM,
+    llm: LLM,
     prm_model: PRM,
     tokenizer: AutoTokenizer,
     step_sep: str,
@@ -98,6 +89,8 @@ def beam_search(
     device: torch.device = "cpu",
     temperature: float = 0.7,
     gen_step_sep: str = "\n\n",
+    max_model_len: int = 4096,
+    max_new_tokens: int = 512,
 ) -> Dict[str, str | int | bool]:
     """PRM-guided beam search (arxiv 2408.03314, §3.2).
 
@@ -115,8 +108,21 @@ def beam_search(
     beam_width = N // M
     beams: List[Dict] = [{"steps": [], "score": 0.0, "done": False} for _ in range(beam_width)]
 
+    token_budget = max_model_len - max_new_tokens
+
     for _ in range(max_steps):
         active = [b for b in beams if not b["done"]]
+        done_beams = [b for b in beams if b["done"]]
+        if not active:
+            break
+
+        # Mark beams whose context already exceeds the token budget as done.
+        for beam in active:
+            ctx = prompt + "".join(s + gen_step_sep for s in beam["steps"])
+            if len(tokenizer.encode(ctx)) >= token_budget:
+                beam["done"] = True
+
+        active = [b for b in active if not b["done"]]
         done_beams = [b for b in beams if b["done"]]
         if not active:
             break
@@ -126,8 +132,8 @@ def beam_search(
             for beam in active
             for _ in range(M)
         ]
-        all_steps = _generate_next_steps_batched(
-            gen_model, tokenizer, contexts, gen_step_sep, device, temperature=temperature
+        all_steps = _generate_next_steps_vllm(
+            llm, contexts, gen_step_sep, max_new_tokens=max_new_tokens, temperature=temperature
         )
 
         new_candidates: List[Dict] = []
@@ -151,6 +157,8 @@ def beam_search(
     answer_text = last_step if (r"\boxed{" in last_step or r"\boxed {" in last_step) else "".join(best["steps"])
     answer = normalize_answer(extract_boxed(answer_text))
     correct = grade_answer(answer, ground_truth)
+    print(f"Best trace: steps={len(best["steps"])}, score={best["score"]}, correct={correct}")
+    print(prompt + "".join(s + gen_step_sep for s in best["steps"]))
 
     return {
         "beam_answer": answer,
